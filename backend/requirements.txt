@@ -1,3 +1,0 @@
-Flask
-oracledb
-flask-cors

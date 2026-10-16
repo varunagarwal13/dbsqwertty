@@ -1,5 +1,8 @@
-# Database API runtime
+# Sakura Deck Java JDBC API
 
-The active API connector is now the Java JDBC service in `../java-backend`. The older Flask files in this folder are retained as historical/reference scripts, but they are no longer the intended runtime.
+This replaces the Python `oracledb` service with a Java 8 JDBC service while preserving the frontend API on port `5000`.
 
-Run the Java service from `java-backend` with `mvn compile exec:java` after configuring Oracle credentials in `java-backend/.env` or environment variables. It listens on port 5000 by default, so the existing frontends keep their API URL.
+1. Copy `.env.example` to `.env` and set the Oracle connection values. Do not commit `.env`.
+2. Run `mvn compile exec:java` from this directory.
+
+The service exposes `GET /products`, `GET /cart`, cart add/update/remove, `POST /checkout`, and `GET /orders` / `GET /orders/{id}`. It uses `DriverManager` with Oracle JDBC and explicit transactions for checkout.
