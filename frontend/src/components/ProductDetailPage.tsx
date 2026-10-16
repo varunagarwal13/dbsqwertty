@@ -20,6 +20,7 @@ interface ProductDetailPageProps {
   onOpenCart?: () => void;
   onOpenOrders?: () => void;
   onOpenSearch?: () => void;
+  onOpenCustomer?: () => void;
   totalItemCount?: number;
 }
 
@@ -47,6 +48,7 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   onOpenCart,
   onOpenOrders,
   onOpenSearch,
+  onOpenCustomer,
   totalItemCount = 0,
 }) => {
   const galleryImages = (product.images && product.images.length > 0) ? product.images : [product.image];
@@ -230,6 +232,9 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
           </button>
           <button onClick={onOpenOrders} className="pdp-nav-link" data-cursor aria-label="Customer Orders">
             <span className="pdp-nav-tx"><span>Orders</span><span className="alt">注文</span></span>
+          </button>
+          <button onClick={onOpenCustomer} className="pdp-nav-link" data-cursor aria-label="Customer Profile">
+            <span className="pdp-nav-tx"><span>Profile</span><span className="alt">顧客</span></span>
           </button>
           <button onClick={onOpenCart} className="pdp-nav-link pdp-nav-cart" data-cursor aria-label="Shopping Cart">
             <span className="pdp-nav-tx"><span>Cart</span><span className="alt">袋</span></span>

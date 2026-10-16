@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { CartItem } from "./CartDrawer";
-import { api, DBOrder, CURRENT_CUSTOMER_ID } from "../services/api";
+import { api, DBOrder, DBCustomer } from "../services/api";
 
 const PRODUCT_DB_ID_MAP: Record<string, number> = {
   keyboard: 1,
@@ -50,6 +50,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const [selectedMode, setSelectedMode] = useState<string>("SAKURA DECK Test Wallet");
   const [isProcessing, setIsProcessing] = useState(false);
   const [completedOrder, setCompletedOrder] = useState<DBOrder | null>(null);
+  const [customer, setCustomer] = useState<DBCustomer | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      api.fetchCustomer().then(c => setCustomer(c));
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -254,13 +261,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     Customer Details (Customer Entity)
                   </span>
                   <span style={{ fontSize: 11, color: T.vermilion, fontWeight: 500 }}>
-                    ID: {CURRENT_CUSTOMER_ID}
+                    ID: {customer ? customer.customer_id : api.getActiveCustomerId()}
                   </span>
                 </div>
                 <div style={{ fontSize: 13, color: T.bone, lineHeight: 1.5 }}>
-                  <strong>Varun Agarwal</strong> · varun.agarwal@example.com
+                  <strong>{customer ? `${customer.first_name} ${customer.last_name}` : "Varun Agarwal"}</strong> · {customer?.email || "varun.agarwal@example.com"}
                   <div style={{ color: T.boneDim, fontSize: 12, marginTop: 2 }}>
-                    42 Oak Street, Sanctuary, CA 94016 · Phone: 555-0199
+                    {customer?.house_no || "42"} {customer?.street || "Oak Street"}, {customer?.city || "Tokyo"} {customer?.state || "Kanto"} {customer?.pincode || "100-0001"} · Phone: {customer?.phone_no || "555-0199"}
                   </div>
                 </div>
               </div>

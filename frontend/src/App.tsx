@@ -6,6 +6,7 @@ import { CartDrawer, CartItem } from "./components/CartDrawer";
 import { CheckoutModal } from "./components/CheckoutModal";
 import { OrdersModal } from "./components/OrdersModal";
 import { SearchModal } from "./components/SearchModal";
+import { CustomerModal } from "./components/CustomerModal";
 import { api, getApiBase } from "./services/api";
 import "./shaders/threeui.css";
 
@@ -40,6 +41,8 @@ export default function App() {
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isCustomerOpen, setIsCustomerOpen] = useState(false);
+  const [activeCustomerId, setActiveCustomerId] = useState(() => api.getActiveCustomerId());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Sync cart to localStorage whenever it changes
@@ -62,9 +65,9 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [totalItemCount, selectedProductId]);
 
-  // Sync initial cart from Oracle SQL Database Backend
-  useEffect(() => {
-    fetch(`${getApiBase()}/cart?customer_id=25BYB0186`)
+  // Sync initial cart from Oracle SQL Database Backend for active customer
+  const syncCartFromDB = useCallback((custId: string) => {
+    fetch(`${getApiBase()}/cart?customer_id=${custId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((res) => {
         if (res && res.success && Array.isArray(res.data)) {
@@ -82,15 +85,19 @@ export default function App() {
               });
             }
           }
-          if (loadedItems.length > 0) {
-            setCart(loadedItems);
-          }
+          setCart(loadedItems);
+        } else {
+          setCart([]);
         }
       })
       .catch((err) => {
         console.warn("[Backend DB] Offline or unreachable, using local state:", err);
       });
   }, []);
+
+  useEffect(() => {
+    syncCartFromDB(activeCustomerId);
+  }, [activeCustomerId, syncCartFromDB]);
 
   // Listen for browser hash changes
   useEffect(() => {
@@ -165,7 +172,7 @@ export default function App() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        customer_id: "25BYB0186",
+        customer_id: activeCustomerId,
         product_id: dbProductId,
         quantity: quantity,
       }),
@@ -185,7 +192,7 @@ export default function App() {
       .catch(err => {
         console.warn("[Oracle SQL DB] Failed to persist cart item:", err);
       });
-  }, []);
+  }, [activeCustomerId]);
 
   const handleRemoveFromCart = useCallback((idx: number) => {
     setCart(prev => {
@@ -228,6 +235,7 @@ export default function App() {
           onOpenCart={() => setIsCartOpen(true)}
           onOpenOrders={() => setIsOrdersOpen(true)}
           onOpenSearch={() => setIsSearchOpen(true)}
+          onOpenCustomer={() => setIsCustomerOpen(true)}
           totalItemCount={totalItemCount}
         />
       ) : (
@@ -242,25 +250,43 @@ export default function App() {
             bodySize={17}
             headingLetterSpacing={-0.012}
           />
-          {/* Quick Floating Link to Track Orders & Lifecycle */}
-          <button
-            onClick={() => setIsOrdersOpen(true)}
-            style={{
-              position: "fixed", bottom: 24, left: 24, zIndex: 90,
-              padding: "10px 18px",
-              background: "rgba(10,14,18,0.85)", backdropFilter: "blur(8px)",
-              border: "1px solid rgba(223,231,224,0.18)", borderRadius: 100,
-              fontSize: 11, fontWeight: 500, letterSpacing: ".18em", textTransform: "uppercase",
-              color: "#dfe7e0", cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 8,
-              boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
-              transition: "all .3s ease",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "#e0231c"; e.currentTarget.style.transform = "translateY(-2px)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(223,231,224,0.18)"; e.currentTarget.style.transform = "translateY(0)"; }}
-          >
-            <span style={{ color: "#e0231c" }}>●</span> View Orders &amp; Lifecycle
-          </button>
+          {/* Customer Quick Navigation: Customer Profile & Order Tracking */}
+          <div style={{
+            position: "fixed", bottom: 24, left: 24, zIndex: 90,
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 10px",
+            background: "rgba(10,14,18,0.88)", backdropFilter: "blur(14px)",
+            border: "1px solid rgba(223,231,224,0.18)", borderRadius: 100,
+            boxShadow: "0 12px 40px rgba(0,0,0,0.7)",
+          }}>
+            <button
+              onClick={() => setIsCustomerOpen(true)}
+              style={{
+                padding: "8px 14px", background: "none", border: "none",
+                borderRadius: 100, color: "#dfe7e0", fontSize: 11, fontWeight: 500,
+                letterSpacing: ".12em", textTransform: "uppercase", cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 6, transition: "background .2s",
+              }}
+              onMouseEnter={e => (e.currentTarget.style.backgroundColor = "rgba(223,231,224,0.1)")}
+              onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+            >
+              <span>👤</span> {activeCustomerId}
+            </button>
+            <span style={{ width: 1, height: 14, background: "rgba(223,231,224,0.15)" }} />
+            <button
+              onClick={() => setIsOrdersOpen(true)}
+              style={{
+                padding: "8px 14px", background: "none", border: "none",
+                borderRadius: 100, color: "#dfe7e0", fontSize: 11, fontWeight: 500,
+                letterSpacing: ".12em", textTransform: "uppercase", cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 6, transition: "background .2s",
+              }}
+              onMouseEnter={e => (e.currentTarget.style.backgroundColor = "rgba(223,231,224,0.1)")}
+              onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+            >
+              <span style={{ color: "#e0231c" }}>●</span> Orders
+            </button>
+          </div>
         </div>
       )}
 
@@ -305,6 +331,17 @@ export default function App() {
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
         onSelectProduct={handleSelectProduct}
+      />
+
+      {/* Customer Account & Profile Modal */}
+      <CustomerModal
+        isOpen={isCustomerOpen}
+        onClose={() => setIsCustomerOpen(false)}
+        onCustomerChanged={(newId) => {
+          setActiveCustomerId(newId);
+          setToastMessage(`Switched active session to Customer ${newId}`);
+          setTimeout(() => setToastMessage(null), 3000);
+        }}
       />
 
       {/* Global toast */}

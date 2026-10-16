@@ -34,6 +34,11 @@ public final class JavaOracleServer {
         }
         HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
         server.createContext("/products", JavaOracleServer::products);
+        server.createContext("/categories", JavaOracleServer::categories);
+        server.createContext("/customer", JavaOracleServer::customerHandler);
+        server.createContext("/customers", JavaOracleServer::customersList);
+        server.createContext("/inventory", JavaOracleServer::inventoryHandler);
+        server.createContext("/inventory/update", JavaOracleServer::inventoryUpdate);
         server.createContext("/cart", JavaOracleServer::cart);
         server.createContext("/cart/add", JavaOracleServer::cartAdd);
         server.createContext("/cart/update", JavaOracleServer::cartUpdate);
@@ -381,6 +386,220 @@ public final class JavaOracleServer {
         } else {
             send(ex, 405, "{\"success\":false,\"error\":\"Method not allowed\"}");
         }
+    }
+
+    private static void categories(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (ex.getRequestMethod().equalsIgnoreCase("GET")) {
+            String sql = "SELECT c.Category_ID, c.Category_name, NVL(c.Description, '') Description, COUNT(p.Product_ID) Product_Count " +
+                         "FROM Category c LEFT JOIN Product p ON c.Category_ID=p.Category_ID " +
+                         "GROUP BY c.Category_ID, c.Category_name, c.Description ORDER BY c.Category_ID";
+            try (Connection conn = connection(); PreparedStatement s = conn.prepareStatement(sql); ResultSet r = s.executeQuery()) {
+                List<String> rows = new ArrayList<>();
+                while (r.next()) {
+                    rows.add("{\"category_id\":" + r.getInt(1) + 
+                             ",\"category_name\":" + quote(r.getString(2)) + 
+                             ",\"description\":" + quote(r.getString(3)) + 
+                             ",\"product_count\":" + r.getInt(4) + "}");
+                }
+                send(ex, 200, "{\"success\":true,\"data\":[" + join(rows) + "]}");
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else if (ex.getRequestMethod().equalsIgnoreCase("POST")) {
+            Map<String, String> b = body(ex);
+            String name = b.get("category_name");
+            String desc = b.get("description");
+            if (name == null || name.trim().isEmpty()) { error(ex, 400, "Category name is required"); return; }
+            try (Connection conn = connection(); PreparedStatement s = conn.prepareStatement("INSERT INTO Category (Category_name, Description) VALUES (?, ?)", new String[] { "CATEGORY_ID" })) {
+                s.setString(1, name.trim());
+                s.setString(2, desc != null ? desc.trim() : "");
+                s.executeUpdate();
+                int id = 0;
+                try (ResultSet k = s.getGeneratedKeys()) { if (k.next()) id = k.getInt(1); }
+                send(ex, 201, "{\"success\":true,\"message\":\"Category created successfully\",\"category_id\":" + id + ",\"category_name\":" + quote(name.trim()) + "}");
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else {
+            send(ex, 405, "{\"success\":false,\"error\":\"Method not allowed\"}");
+        }
+    }
+
+    private static void customerHandler(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (ex.getRequestMethod().equalsIgnoreCase("GET")) {
+            String custId = customer(ex);
+            try (Connection conn = connection(); PreparedStatement s = conn.prepareStatement(
+                    "SELECT Customer_ID, First_Name, Last_Name, Email, NVL(Phone_No,'') Phone_No, " +
+                    "NVL(House_No,'') House_No, NVL(Street,'') Street, NVL(City,'') City, NVL(State,'') State, NVL(Pincode,'') Pincode, Registration_Date " +
+                    "FROM Customer WHERE Customer_ID=?")) {
+                s.setString(1, custId);
+                try (ResultSet r = s.executeQuery()) {
+                    if (!r.next()) { error(ex, 404, "Customer not found"); return; }
+                    String json = "{\"customer_id\":" + quote(r.getString(1)) + 
+                                  ",\"first_name\":" + quote(r.getString(2)) + 
+                                  ",\"last_name\":" + quote(r.getString(3)) + 
+                                  ",\"email\":" + quote(r.getString(4)) + 
+                                  ",\"phone_no\":" + quote(r.getString(5)) + 
+                                  ",\"house_no\":" + quote(r.getString(6)) + 
+                                  ",\"street\":" + quote(r.getString(7)) + 
+                                  ",\"city\":" + quote(r.getString(8)) + 
+                                  ",\"state\":" + quote(r.getString(9)) + 
+                                  ",\"pincode\":" + quote(r.getString(10)) + 
+                                  ",\"registration_date\":" + quote(r.getTimestamp(11)) + "}";
+                    send(ex, 200, "{\"success\":true,\"data\":" + json + "}");
+                }
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else if (ex.getRequestMethod().equalsIgnoreCase("PUT")) {
+            Map<String, String> b = body(ex);
+            String custId = b.get("customer_id") != null && !b.get("customer_id").trim().isEmpty() ? b.get("customer_id").trim() : customer(ex);
+            String first = b.get("first_name");
+            String last = b.get("last_name");
+            String phone = b.get("phone_no");
+            String house = b.get("house_no");
+            String street = b.get("street");
+            String city = b.get("city");
+            String state = b.get("state");
+            String pin = b.get("pincode");
+            try (Connection conn = connection(); PreparedStatement s = conn.prepareStatement(
+                    "UPDATE Customer SET First_Name=NVL(?, First_Name), Last_Name=NVL(?, Last_Name), " +
+                    "Phone_No=?, House_No=?, Street=?, City=?, State=?, Pincode=? WHERE Customer_ID=?")) {
+                s.setString(1, first);
+                s.setString(2, last);
+                s.setString(3, phone != null ? phone : "");
+                s.setString(4, house != null ? house : "");
+                s.setString(5, street != null ? street : "");
+                s.setString(6, city != null ? city : "");
+                s.setString(7, state != null ? state : "");
+                s.setString(8, pin != null ? pin : "");
+                s.setString(9, custId);
+                int updated = s.executeUpdate();
+                if (updated == 0) { error(ex, 404, "Customer not found"); return; }
+                send(ex, 200, "{\"success\":true,\"message\":\"Customer profile updated successfully\",\"customer_id\":" + quote(custId) + "}");
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else {
+            send(ex, 405, "{\"success\":false,\"error\":\"Method not allowed\"}");
+        }
+    }
+
+    private static void customersList(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (ex.getRequestMethod().equalsIgnoreCase("GET")) {
+            try (Connection conn = connection(); PreparedStatement s = conn.prepareStatement(
+                    "SELECT Customer_ID, First_Name, Last_Name, Email, NVL(Phone_No,'') Phone_No, NVL(City,'') City, Registration_Date FROM Customer ORDER BY Registration_Date DESC");
+                 ResultSet r = s.executeQuery()) {
+                List<String> rows = new ArrayList<>();
+                while (r.next()) {
+                    rows.add("{\"customer_id\":" + quote(r.getString(1)) + 
+                             ",\"first_name\":" + quote(r.getString(2)) + 
+                             ",\"last_name\":" + quote(r.getString(3)) + 
+                             ",\"email\":" + quote(r.getString(4)) + 
+                             ",\"phone_no\":" + quote(r.getString(5)) + 
+                             ",\"city\":" + quote(r.getString(6)) + 
+                             ",\"registration_date\":" + quote(r.getTimestamp(7)) + "}");
+                }
+                send(ex, 200, "{\"success\":true,\"data\":[" + join(rows) + "]}");
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else if (ex.getRequestMethod().equalsIgnoreCase("POST")) {
+            Map<String, String> b = body(ex);
+            String id = b.get("customer_id");
+            String first = b.get("first_name");
+            String last = b.get("last_name");
+            String email = b.get("email");
+            String phone = b.get("phone_no");
+            String house = b.get("house_no");
+            String street = b.get("street");
+            String city = b.get("city");
+            String state = b.get("state");
+            String pin = b.get("pincode");
+            if (id == null || id.trim().isEmpty() || email == null || email.trim().isEmpty()) {
+                error(ex, 400, "Customer ID and Email are required");
+                return;
+            }
+            try (Connection conn = connection()) {
+                conn.setAutoCommit(false);
+                try (PreparedStatement s = conn.prepareStatement("INSERT INTO Customer (Customer_ID, First_Name, Last_Name, Email, Phone_No, House_No, Street, City, State, Pincode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                     PreparedStatement cart = conn.prepareStatement("INSERT INTO Cart (Customer_ID, Cart_Status) VALUES (?, 'ACTIVE')")) {
+                    s.setString(1, id.trim());
+                    s.setString(2, first != null ? first.trim() : "Guest");
+                    s.setString(3, last != null ? last.trim() : "User");
+                    s.setString(4, email.trim());
+                    s.setString(5, phone != null ? phone.trim() : "");
+                    s.setString(6, house != null ? house.trim() : "");
+                    s.setString(7, street != null ? street.trim() : "");
+                    s.setString(8, city != null ? city.trim() : "");
+                    s.setString(9, state != null ? state.trim() : "");
+                    s.setString(10, pin != null ? pin.trim() : "");
+                    s.executeUpdate();
+                    cart.setString(1, id.trim());
+                    cart.executeUpdate();
+                    conn.commit();
+                    send(ex, 201, "{\"success\":true,\"message\":\"Customer registered with active cart\",\"customer_id\":" + quote(id.trim()) + "}");
+                } catch (Exception e) { conn.rollback(); throw e; }
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else {
+            send(ex, 405, "{\"success\":false,\"error\":\"Method not allowed\"}");
+        }
+    }
+
+    private static void inventoryHandler(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (!method(ex, "GET")) return;
+        String sql = "SELECT i.Inventory_ID, i.Product_ID, p.Product_Name, p.Brand, NVL(c.Category_name, 'General') Category_Name, " +
+                     "p.Price, i.Available_Quantity, i.Last_Updated_Date " +
+                     "FROM Inventory i JOIN Product p ON i.Product_ID=p.Product_ID " +
+                     "LEFT JOIN Category c ON p.Category_ID=c.Category_ID ORDER BY i.Product_ID";
+        try (Connection conn = connection(); PreparedStatement s = conn.prepareStatement(sql); ResultSet r = s.executeQuery()) {
+            List<String> rows = new ArrayList<>();
+            while (r.next()) {
+                rows.add("{\"inventory_id\":" + r.getInt(1) + 
+                         ",\"product_id\":" + r.getInt(2) + 
+                         ",\"product_name\":" + quote(r.getString(3)) + 
+                         ",\"brand\":" + quote(r.getString(4)) + 
+                         ",\"category_name\":" + quote(r.getString(5)) + 
+                         ",\"price\":" + r.getDouble(6) + 
+                         ",\"available_quantity\":" + r.getInt(7) + 
+                         ",\"last_updated_date\":" + quote(r.getTimestamp(8)) + "}");
+            }
+            send(ex, 200, "{\"success\":true,\"data\":[" + join(rows) + "]}");
+        } catch (SQLException e) { sqlError(ex, e); }
+    }
+
+    private static void inventoryUpdate(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (!method(ex, "POST") && !method(ex, "PUT")) return;
+        Map<String, String> b = body(ex);
+        int prodId = integer(b.get("product_id"), -1);
+        int qty = integer(b.get("available_quantity"), -1);
+        int delta = integer(b.get("delta"), 0);
+        if (prodId < 0) { error(ex, 400, "product_id is required"); return; }
+        
+        try (Connection conn = connection()) {
+            if (qty >= 0) {
+                try (PreparedStatement s = conn.prepareStatement("UPDATE Inventory SET Available_Quantity=?, Last_Updated_Date=CURRENT_TIMESTAMP WHERE Product_ID=?")) {
+                    s.setInt(1, qty);
+                    s.setInt(2, prodId);
+                    int u = s.executeUpdate();
+                    if (u == 0) { error(ex, 404, "Inventory record not found"); return; }
+                }
+            } else if (delta != 0) {
+                try (PreparedStatement s = conn.prepareStatement("UPDATE Inventory SET Available_Quantity=GREATEST(0, Available_Quantity + ?), Last_Updated_Date=CURRENT_TIMESTAMP WHERE Product_ID=?")) {
+                    s.setInt(1, delta);
+                    s.setInt(2, prodId);
+                    int u = s.executeUpdate();
+                    if (u == 0) { error(ex, 404, "Inventory record not found"); return; }
+                }
+            } else {
+                error(ex, 400, "available_quantity or delta is required");
+                return;
+            }
+            try (PreparedStatement s = conn.prepareStatement("SELECT Available_Quantity, Last_Updated_Date FROM Inventory WHERE Product_ID=?")) {
+                s.setInt(1, prodId);
+                ResultSet r = s.executeQuery();
+                if (r.next()) {
+                    send(ex, 200, "{\"success\":true,\"message\":\"Inventory updated\",\"product_id\":" + prodId + ",\"available_quantity\":" + r.getInt(1) + ",\"last_updated_date\":" + quote(r.getTimestamp(2)) + "}");
+                    return;
+                }
+            }
+            send(ex, 200, "{\"success\":true,\"message\":\"Inventory updated\"}");
+        } catch (SQLException e) { sqlError(ex, e); }
     }
 
     private static String productJson(ResultSet r) throws SQLException {

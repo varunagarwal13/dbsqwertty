@@ -62,6 +62,38 @@ export interface DBReview {
   review_date: string;
 }
 
+export interface DBCustomer {
+  customer_id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone_no?: string;
+  house_no?: string;
+  street?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  registration_date?: string;
+}
+
+export interface DBCategory {
+  category_id: number;
+  category_name: string;
+  description?: string;
+  product_count?: number;
+}
+
+export interface DBInventoryItem {
+  inventory_id: number;
+  product_id: number;
+  product_name: string;
+  brand: string;
+  category_name: string;
+  price: number;
+  available_quantity: number;
+  last_updated_date?: string;
+}
+
 // Local storage persistent keys
 const LOCAL_ORDERS_KEY = "sakura_orders_v2";
 const LOCAL_REVIEWS_KEY = "sakura_reviews_v2";
@@ -286,7 +318,7 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customer_id: CURRENT_CUSTOMER_ID,
+          customer_id: this.getActiveCustomerId(),
           payment_mode: paymentMode,
         }),
       });
@@ -457,5 +489,179 @@ export const api = {
     }
 
     return newReview;
+  },
+
+  getActiveCustomerId(): string {
+    try {
+      return localStorage.getItem("sakura_active_cust") || CURRENT_CUSTOMER_ID;
+    } catch {
+      return CURRENT_CUSTOMER_ID;
+    }
+  },
+
+  setActiveCustomerId(id: string): void {
+    try {
+      localStorage.setItem("sakura_active_cust", id);
+      window.dispatchEvent(new CustomEvent("CUSTOMER_CHANGED", { detail: id }));
+    } catch {}
+  },
+
+  async fetchCustomer(customerId?: string): Promise<DBCustomer> {
+    const custId = customerId || this.getActiveCustomerId();
+    try {
+      const res = await fetch(`${getApiBase()}/customer?customer_id=${custId}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          localStorage.setItem(`sakura_cust_profile_${custId}`, JSON.stringify(json.data));
+          return json.data;
+        }
+      }
+    } catch (e) {
+      console.warn("[API] fetchCustomer offline fallback:", e);
+    }
+    try {
+      const local = localStorage.getItem(`sakura_cust_profile_${custId}`);
+      if (local) return JSON.parse(local);
+    } catch {}
+    return {
+      customer_id: custId,
+      first_name: "Varun",
+      last_name: "Agarwal",
+      email: "varun.agarwal@example.com",
+      phone_no: "555-0199",
+      city: "Tokyo",
+    };
+  },
+
+  async updateCustomer(data: Partial<DBCustomer>): Promise<boolean> {
+    const custId = data.customer_id || this.getActiveCustomerId();
+    try {
+      const res = await fetch(`${getApiBase()}/customer`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...data, customer_id: custId }),
+      });
+      if (res.ok) {
+        const updated = await this.fetchCustomer(custId);
+        localStorage.setItem(`sakura_cust_profile_${custId}`, JSON.stringify(updated));
+        return true;
+      }
+    } catch (e) {
+      console.warn("[API] updateCustomer offline notice:", e);
+    }
+    return true;
+  },
+
+  async fetchAllCustomers(): Promise<DBCustomer[]> {
+    try {
+      const res = await fetch(`${getApiBase()}/customers`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          return json.data;
+        }
+      }
+    } catch (e) {
+      console.warn("[API] fetchAllCustomers offline fallback:", e);
+    }
+    return [
+      {
+        customer_id: "25BYB0186",
+        first_name: "Varun",
+        last_name: "Agarwal",
+        email: "varun.agarwal@example.com",
+        phone_no: "555-0199",
+        city: "Tokyo",
+      },
+    ];
+  },
+
+  async createCustomer(data: DBCustomer): Promise<DBCustomer> {
+    try {
+      const res = await fetch(`${getApiBase()}/customers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (res.ok) {
+        this.setActiveCustomerId(data.customer_id);
+      }
+    } catch (e) {
+      console.warn("[API] createCustomer notice:", e);
+    }
+    this.setActiveCustomerId(data.customer_id);
+    return data;
+  },
+
+  async fetchCategories(): Promise<DBCategory[]> {
+    try {
+      const res = await fetch(`${getApiBase()}/categories`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          return json.data;
+        }
+      }
+    } catch (e) {
+      console.warn("[API] fetchCategories fallback:", e);
+    }
+    return [
+      { category_id: 1, category_name: "Electronics", description: "Premium tech and accessories", product_count: 4 },
+      { category_id: 28, category_name: "Keyboards", description: "Mechanical keyboards and accessories", product_count: 1 },
+      { category_id: 29, category_name: "Mice & Accessories", description: "Precision pointing devices", product_count: 1 },
+      { category_id: 30, category_name: "Lighting", description: "Desk and monitor lights", product_count: 2 },
+      { category_id: 31, category_name: "Desk Essentials", description: "Workspace organization and stands", product_count: 4 },
+    ];
+  },
+
+  async createCategory(category_name: string, description: string): Promise<DBCategory> {
+    try {
+      const res = await fetch(`${getApiBase()}/categories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category_name, description }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        return { category_id: json.category_id || 99, category_name, description, product_count: 0 };
+      }
+    } catch (e) {
+      console.warn("[API] createCategory notice:", e);
+    }
+    return { category_id: 99, category_name, description, product_count: 0 };
+  },
+
+  async fetchInventory(): Promise<DBInventoryItem[]> {
+    try {
+      const res = await fetch(`${getApiBase()}/inventory`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          return json.data;
+        }
+      }
+    } catch (e) {
+      console.warn("[API] fetchInventory notice:", e);
+    }
+    return [];
+  },
+
+  async updateInventoryStock(productId: number, quantity?: number, delta?: number): Promise<boolean> {
+    try {
+      const res = await fetch(`${getApiBase()}/inventory/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_id: productId,
+          available_quantity: quantity,
+          delta,
+        }),
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn("[API] updateInventoryStock notice:", e);
+      return false;
+    }
   },
 };
