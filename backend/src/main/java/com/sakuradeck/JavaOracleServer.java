@@ -40,6 +40,8 @@ public final class JavaOracleServer {
         server.createContext("/cart/remove", JavaOracleServer::cartRemove);
         server.createContext("/checkout", JavaOracleServer::checkout);
         server.createContext("/orders", JavaOracleServer::orders);
+        server.createContext("/orders/status", JavaOracleServer::orderStatus);
+        server.createContext("/reviews", JavaOracleServer::reviews);
         server.createContext("/", JavaOracleServer::notFound);
         server.setExecutor(null);
         server.start();
@@ -155,39 +157,359 @@ public final class JavaOracleServer {
     private static void checkout(HttpExchange ex) throws IOException {
         if (options(ex)) return;
         if (!method(ex, "POST")) return;
+        Map<String, String> body = body(ex);
+        String paymentMode = body.get("payment_mode");
+        if (paymentMode == null || paymentMode.trim().isEmpty()) {
+            paymentMode = "SAKURA DECK Test Wallet";
+        }
         try (Connection c = connection()) {
             c.setAutoCommit(false);
-            try (PreparedStatement cart = c.prepareStatement("SELECT Cart_ID FROM Cart WHERE Customer_ID=?"); PreparedStatement items = c.prepareStatement("SELECT ci.Product_ID, ci.Quantity, p.Price, NVL(i.Available_Quantity,0) FROM Cart_Item ci JOIN Product p ON ci.Product_ID=p.Product_ID LEFT JOIN Inventory i ON ci.Product_ID=i.Product_ID WHERE ci.Cart_ID=? FOR UPDATE")) {
-                cart.setString(1,customer(ex)); ResultSet cr=cart.executeQuery(); if(!cr.next()){error(ex,404,"Cart not found");return;} int cartId=cr.getInt(1); items.setInt(1,cartId); ResultSet r=items.executeQuery(); List<int[]> ids=new ArrayList<>(); List<Double> prices=new ArrayList<>(); double total=0; while(r.next()){int p=r.getInt(1),q=r.getInt(2),stock=r.getInt(4);if(q>stock){c.rollback();error(ex,400,"Not enough stock for product ID "+p);return;}ids.add(new int[]{p,q});prices.add(r.getDouble(3));total+=r.getDouble(3)*q;} if(ids.isEmpty()){error(ex,400,"Cart is empty");return;}
-                int orderId; try(PreparedStatement o=c.prepareStatement("INSERT INTO Order_Tab (Customer_ID, Order_Status) VALUES (?, 'PROCESSING')", new String[] { "ORDER_ID" })){o.setString(1,customer(ex));o.executeUpdate();ResultSet k=o.getGeneratedKeys();if(!k.next())throw new SQLException("Order id was not returned");orderId=k.getInt(1);}
-                for(int i=0;i<ids.size();i++){try(PreparedStatement oi=c.prepareStatement("INSERT INTO Order_Item (Order_ID, Product_ID, Quantity, Unit_Price) VALUES (?,?,?,?)");PreparedStatement inv=c.prepareStatement("UPDATE Inventory SET Available_Quantity=Available_Quantity-? WHERE Product_ID=?")){oi.setInt(1,orderId);oi.setInt(2,ids.get(i)[0]);oi.setInt(3,ids.get(i)[1]);oi.setDouble(4,prices.get(i));oi.executeUpdate();inv.setInt(1,ids.get(i)[1]);inv.setInt(2,ids.get(i)[0]);inv.executeUpdate();}}
-                try(PreparedStatement p=c.prepareStatement("INSERT INTO Payment (Order_ID, Payment_mode, Payment_Status, Amount) VALUES (?, 'SAKURA DECK Test Wallet', 'COMPLETED', ?)")){p.setInt(1,orderId);p.setDouble(2,total);p.executeUpdate();} try(PreparedStatement d=c.prepareStatement("DELETE FROM Cart_Item WHERE Cart_ID=?")){d.setInt(1,cartId);d.executeUpdate();} c.commit(); send(ex,201,"{\"success\":true,\"order_id\":"+orderId+",\"total_amount\":"+total+"}");
-            } catch(Exception e){c.rollback();throw e;}
-        } catch(Exception e){sqlError(ex,e);}
+            try (PreparedStatement cart = c.prepareStatement("SELECT Cart_ID FROM Cart WHERE Customer_ID=?"); 
+                 PreparedStatement items = c.prepareStatement("SELECT ci.Product_ID, ci.Quantity, p.Price, NVL(i.Available_Quantity,0) FROM Cart_Item ci JOIN Product p ON ci.Product_ID=p.Product_ID LEFT JOIN Inventory i ON ci.Product_ID=i.Product_ID WHERE ci.Cart_ID=? FOR UPDATE")) {
+                cart.setString(1, customer(ex)); 
+                ResultSet cr = cart.executeQuery(); 
+                if (!cr.next()) { error(ex, 404, "Cart not found"); return; } 
+                int cartId = cr.getInt(1); 
+                items.setInt(1, cartId); 
+                ResultSet r = items.executeQuery(); 
+                List<int[]> ids = new ArrayList<>(); 
+                List<Double> prices = new ArrayList<>(); 
+                double total = 0; 
+                while (r.next()) {
+                    int p = r.getInt(1), q = r.getInt(2), stock = r.getInt(4);
+                    if (q > stock) { c.rollback(); error(ex, 400, "Not enough stock for product ID " + p); return; }
+                    ids.add(new int[]{p, q});
+                    prices.add(r.getDouble(3));
+                    total += r.getDouble(3) * q;
+                } 
+                if (ids.isEmpty()) { error(ex, 400, "Cart is empty"); return; }
+                
+                // 1. Insert into Order_Tab with lifecycle state 'PROCESSING'
+                int orderId; 
+                try (PreparedStatement o = c.prepareStatement("INSERT INTO Order_Tab (Customer_ID, Order_Status) VALUES (?, 'PROCESSING')", new String[] { "ORDER_ID" })) {
+                    o.setString(1, customer(ex));
+                    o.executeUpdate();
+                    ResultSet k = o.getGeneratedKeys();
+                    if (!k.next()) throw new SQLException("Order id was not returned");
+                    orderId = k.getInt(1);
+                }
+
+                // 2. Insert order lines into Order_Item and deduct inventory
+                for (int i = 0; i < ids.size(); i++) {
+                    try (PreparedStatement oi = c.prepareStatement("INSERT INTO Order_Item (Order_ID, Product_ID, Quantity, Unit_Price) VALUES (?,?,?,?)");
+                         PreparedStatement inv = c.prepareStatement("UPDATE Inventory SET Available_Quantity=Available_Quantity-? WHERE Product_ID=?")) {
+                        oi.setInt(1, orderId);
+                        oi.setInt(2, ids.get(i)[0]);
+                        oi.setInt(3, ids.get(i)[1]);
+                        oi.setDouble(4, prices.get(i));
+                        oi.executeUpdate();
+                        inv.setInt(1, ids.get(i)[1]);
+                        inv.setInt(2, ids.get(i)[0]);
+                        inv.executeUpdate();
+                    }
+                }
+
+                // 3. Insert Payment record with settlement mode, gateway status COMPLETED, amount paid
+                int paymentId = 0;
+                try (PreparedStatement p = c.prepareStatement("INSERT INTO Payment (Order_ID, Payment_mode, Payment_Status, Amount) VALUES (?, ?, 'COMPLETED', ?)", new String[] { "PAYMENT_ID" })) {
+                    p.setInt(1, orderId);
+                    p.setString(2, paymentMode);
+                    p.setDouble(3, total);
+                    p.executeUpdate();
+                    try (ResultSet pk = p.getGeneratedKeys()) {
+                        if (pk.next()) paymentId = pk.getInt(1);
+                    }
+                } 
+
+                // 4. Clear cart items
+                try (PreparedStatement d = c.prepareStatement("DELETE FROM Cart_Item WHERE Cart_ID=?")) {
+                    d.setInt(1, cartId);
+                    d.executeUpdate();
+                } 
+
+                c.commit(); 
+                send(ex, 201, "{\"success\":true,\"order_id\":" + orderId + ",\"total_amount\":" + total + 
+                     ",\"payment_id\":" + paymentId + ",\"payment_mode\":" + quote(paymentMode) + ",\"payment_status\":\"COMPLETED\"}");
+            } catch (Exception e) { c.rollback(); throw e; }
+        } catch (Exception e) { sqlError(ex, e); }
     }
 
     private static void orders(HttpExchange ex) throws IOException {
         if (options(ex)) return;
-        if (!method(ex,"GET")) return; String path=ex.getRequestURI().getPath(); int id=pathId(path,"/orders/");
-        try(Connection c=connection()){if(id<0){try(PreparedStatement s=c.prepareStatement("SELECT o.Order_ID,o.Order_Date,o.Order_Status,NVL(p.Amount,0) Total_Amount FROM Order_Tab o LEFT JOIN Payment p ON o.Order_ID=p.Order_ID WHERE o.Customer_ID=? ORDER BY o.Order_Date DESC")){s.setString(1,customer(ex));ResultSet r=s.executeQuery();List<String> rows=new ArrayList<>();while(r.next())rows.add("{\"order_id\":"+r.getInt(1)+",\"order_date\":"+quote(r.getTimestamp(2))+",\"order_status\":"+quote(r.getString(3))+",\"total_amount\":"+r.getDouble(4)+"}");send(ex,200,"{\"success\":true,\"data\":["+join(rows)+"]}");}}else{try(PreparedStatement s=c.prepareStatement("SELECT o.Order_ID,o.Order_Date,o.Order_Status,NVL(p.Amount,0),p.Payment_mode FROM Order_Tab o LEFT JOIN Payment p ON o.Order_ID=p.Order_ID WHERE o.Order_ID=? AND o.Customer_ID=?")){s.setInt(1,id);s.setString(2,customer(ex));ResultSet r=s.executeQuery();if(!r.next()){error(ex,404,"Order not found");return;}List<String> items=new ArrayList<>();try(PreparedStatement i=c.prepareStatement("SELECT oi.Product_ID,p.Product_Name,oi.Quantity,oi.Unit_Price FROM Order_Item oi JOIN Product p ON oi.Product_ID=p.Product_ID WHERE oi.Order_ID=?")){i.setInt(1,id);ResultSet ir=i.executeQuery();while(ir.next())items.add("{\"product_id\":"+ir.getInt(1)+",\"product_name\":"+quote(ir.getString(2))+",\"quantity\":"+ir.getInt(3)+",\"unit_price\":"+ir.getDouble(4)+"}");}send(ex,200,"{\"success\":true,\"data\":{\"order_id\":"+r.getInt(1)+",\"order_date\":"+quote(r.getTimestamp(2))+",\"order_status\":"+quote(r.getString(3))+",\"total_amount\":"+r.getDouble(4)+",\"payment_mode\":"+quote(r.getString(5))+",\"items\":["+join(items)+"]}}");}}}catch(SQLException e){sqlError(ex,e);}
+        if (!method(ex, "GET")) return; 
+        String path = ex.getRequestURI().getPath(); 
+        int id = pathId(path, "/orders/");
+        try (Connection c = connection()) {
+            if (id < 0) {
+                // List all orders with payment details
+                String sql = "SELECT o.Order_ID, o.Order_Date, o.Order_Status, NVL(p.Amount,0) Total_Amount, " +
+                        "p.Payment_ID, p.Payment_mode, p.Payment_Status, p.Payment_Date " +
+                        "FROM Order_Tab o LEFT JOIN Payment p ON o.Order_ID=p.Order_ID " +
+                        "WHERE o.Customer_ID=? ORDER BY o.Order_Date DESC";
+                try (PreparedStatement s = c.prepareStatement(sql)) {
+                    s.setString(1, customer(ex));
+                    ResultSet r = s.executeQuery();
+                    List<String> rows = new ArrayList<>();
+                    while (r.next()) {
+                        int ordId = r.getInt(1);
+                        // Fetch order lines for each order
+                        List<String> items = new ArrayList<>();
+                        try (PreparedStatement is = c.prepareStatement("SELECT oi.Order_Item_ID, oi.Product_ID, p.Product_Name, oi.Quantity, oi.Unit_Price FROM Order_Item oi JOIN Product p ON oi.Product_ID=p.Product_ID WHERE oi.Order_ID=?")) {
+                            is.setInt(1, ordId);
+                            ResultSet ir = is.executeQuery();
+                            while (ir.next()) {
+                                items.add("{\"order_item_id\":" + ir.getInt(1) + ",\"product_id\":" + ir.getInt(2) + ",\"product_name\":" + quote(ir.getString(3)) + ",\"quantity\":" + ir.getInt(4) + ",\"unit_price\":" + ir.getDouble(5) + "}");
+                            }
+                        }
+                        rows.add("{\"order_id\":" + ordId + 
+                                 ",\"order_date\":" + quote(r.getTimestamp(2)) + 
+                                 ",\"order_status\":" + quote(r.getString(3)) + 
+                                 ",\"total_amount\":" + r.getDouble(4) + 
+                                 ",\"payment_id\":" + r.getInt(5) + 
+                                 ",\"payment_mode\":" + quote(r.getString(6)) + 
+                                 ",\"payment_status\":" + quote(r.getString(7)) + 
+                                 ",\"payment_date\":" + quote(r.getTimestamp(8)) + 
+                                 ",\"items\":[" + join(items) + "]}");
+                    }
+                    send(ex, 200, "{\"success\":true,\"data\":[" + join(rows) + "]}");
+                }
+            } else {
+                // Single order details
+                try (PreparedStatement s = c.prepareStatement("SELECT o.Order_ID, o.Order_Date, o.Order_Status, NVL(p.Amount,0), p.Payment_ID, p.Payment_mode, p.Payment_Status, p.Payment_Date FROM Order_Tab o LEFT JOIN Payment p ON o.Order_ID=p.Order_ID WHERE o.Order_ID=? AND o.Customer_ID=?")) {
+                    s.setInt(1, id);
+                    s.setString(2, customer(ex));
+                    ResultSet r = s.executeQuery();
+                    if (!r.next()) { error(ex, 404, "Order not found"); return; }
+                    List<String> items = new ArrayList<>();
+                    try (PreparedStatement i = c.prepareStatement("SELECT oi.Order_Item_ID, oi.Product_ID, p.Product_Name, oi.Quantity, oi.Unit_Price FROM Order_Item oi JOIN Product p ON oi.Product_ID=p.Product_ID WHERE oi.Order_ID=?")) {
+                        i.setInt(1, id);
+                        ResultSet ir = i.executeQuery();
+                        while (ir.next()) {
+                            items.add("{\"order_item_id\":" + ir.getInt(1) + ",\"product_id\":" + ir.getInt(2) + ",\"product_name\":" + quote(ir.getString(3)) + ",\"quantity\":" + ir.getInt(4) + ",\"unit_price\":" + ir.getDouble(5) + "}");
+                        }
+                    }
+                    send(ex, 200, "{\"success\":true,\"data\":{\"order_id\":" + r.getInt(1) + 
+                         ",\"order_date\":" + quote(r.getTimestamp(2)) + 
+                         ",\"order_status\":" + quote(r.getString(3)) + 
+                         ",\"total_amount\":" + r.getDouble(4) + 
+                         ",\"payment_id\":" + r.getInt(5) + 
+                         ",\"payment_mode\":" + quote(r.getString(6)) + 
+                         ",\"payment_status\":" + quote(r.getString(7)) + 
+                         ",\"payment_date\":" + quote(r.getTimestamp(8)) + 
+                         ",\"items\":[" + join(items) + "]}}");
+                }
+            }
+        } catch (SQLException e) { sqlError(ex, e); }
     }
 
-    private static String productJson(ResultSet r)throws SQLException{return "{\"product_id\":"+r.getInt(1)+",\"product_name\":"+quote(r.getString(2))+",\"brand\":"+quote(r.getString(3))+",\"price\":"+r.getDouble(4)+",\"available_quantity\":"+r.getInt(5)+"}";}
-    private static String cartJson(ResultSet r)throws SQLException{return "{\"cart_item_id\":"+r.getInt(1)+",\"product_id\":"+r.getInt(2)+",\"quantity\":"+r.getInt(3)+",\"product_name\":"+quote(r.getString(4))+",\"brand\":"+quote(r.getString(5))+",\"price\":"+r.getDouble(6)+",\"available_quantity\":"+r.getInt(7)+"}";}
-    private static String quote(Object value){if(value==null)return"null";String s=value instanceof Timestamp?new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format((Timestamp)value):String.valueOf(value);return "\""+s.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n")+"\"";}
-    private static String join(List<String> v){return String.join(",",v);}
-    private static String env(String key,String fallback){String v=System.getenv(key);if(v==null||v.trim().isEmpty())v=DOTENV.getProperty(key);return v==null||v.trim().isEmpty()?fallback:v.trim();}
-    private static Properties loadDotEnv(){Properties p=new Properties();java.io.File f=new java.io.File(".env");if(!f.isFile())return p;try(java.io.BufferedReader r=new java.io.BufferedReader(new java.io.FileReader(f))){String line;while((line=r.readLine())!=null){line=line.trim();if(line.isEmpty()||line.startsWith("#"))continue;int i=line.indexOf('=');if(i>0)p.setProperty(line.substring(0,i).trim(),line.substring(i+1).trim());}}catch(IOException ignored){}return p;}
-    private static String customer(HttpExchange e){String c=query(e,"customer_id");return c.isEmpty()?CUSTOMER:c;}
-    private static String query(HttpExchange e,String key){String q=e.getRequestURI().getRawQuery();if(q==null)return"";for(String p:q.split("&")){String[]kv=p.split("=",2);if(kv.length==2&&kv[0].equals(key))try{return URLDecoder.decode(kv[1],"UTF-8");}catch(Exception ignored){}}return"";}
-    private static int pathId(String path,String prefix){if(!path.startsWith(prefix))return-1;try{return Integer.parseInt(path.substring(prefix.length()));}catch(Exception e){return-1;}}
-    private static Map<String,String> body(HttpExchange e)throws IOException{String s=read(e.getRequestBody());Map<String,String>m=new HashMap<>();Matcher x=Pattern.compile("\\\"(product_id|quantity|customer_id)\\\"\\s*:\\s*(?:\\\"([^\\\"]*)\\\"|(-?\\d+))").matcher(s);while(x.find())m.put(x.group(1),x.group(2)!=null?x.group(2):x.group(3));return m;}
-    private static String read(InputStream in)throws IOException{byte[]b=new byte[8192];StringBuilder s=new StringBuilder();int n;while((n=in.read(b))>0)s.append(new String(b,0,n,StandardCharsets.UTF_8));return s.toString();}
-    private static int integer(String v,int fallback){try{return Integer.parseInt(v);}catch(Exception e){return fallback;}}
-    private static boolean options(HttpExchange e)throws IOException{if(e.getRequestMethod().equalsIgnoreCase("OPTIONS")){send(e,204,"");return true;}return false;}
-    private static boolean method(HttpExchange e,String expected)throws IOException{if(!e.getRequestMethod().equalsIgnoreCase(expected)){send(e,405,"{\"success\":false,\"error\":\"Method not allowed\"}");return false;}return true;}
-    private static void notFound(HttpExchange e)throws IOException{error(e,404,"Not found");}
-    private static void error(HttpExchange e,int status,String message)throws IOException{send(e,status,"{\"success\":false,\"error\":"+quote(message)+"}");}
-    private static void sqlError(HttpExchange e,Exception error)throws IOException{error.printStackTrace();error(e,503,"Database service unavailable");}
-    private static void send(HttpExchange e,int status,String body)throws IOException{Headers h=e.getResponseHeaders();h.set("Content-Type","application/json; charset=utf-8");h.set("Access-Control-Allow-Origin","*");h.set("Access-Control-Allow-Headers","Content-Type");h.set("Access-Control-Allow-Methods","GET,POST,PUT,DELETE,OPTIONS");if(e.getRequestMethod().equalsIgnoreCase("OPTIONS")){e.sendResponseHeaders(204,-1);return;}byte[]b=body.getBytes(StandardCharsets.UTF_8);e.sendResponseHeaders(status,b.length);try(OutputStream o=e.getResponseBody()){o.write(b);}}
+    private static void orderStatus(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (!method(ex, "POST") && !method(ex, "PUT")) return;
+        Map<String, String> body = body(ex);
+        int orderId = integer(body.get("order_id"), -1);
+        String status = body.get("order_status");
+        if (orderId < 0 || status == null || status.trim().isEmpty()) {
+            error(ex, 400, "order_id and valid order_status are required");
+            return;
+        }
+        status = status.trim().toUpperCase();
+        Set<String> validStatuses = new HashSet<>(Arrays.asList("PENDING", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"));
+        if (!validStatuses.contains(status)) {
+            error(ex, 400, "Invalid order status. Allowed: PENDING, PROCESSING, SHIPPED, DELIVERED, CANCELLED");
+            return;
+        }
+        try (Connection c = connection(); PreparedStatement s = c.prepareStatement("UPDATE Order_Tab SET Order_Status=? WHERE Order_ID=?")) {
+            s.setString(1, status);
+            s.setInt(2, orderId);
+            int updated = s.executeUpdate();
+            if (updated == 0) {
+                error(ex, 404, "Order not found");
+                return;
+            }
+            send(ex, 200, "{\"success\":true,\"message\":\"Order status updated to " + status + "\",\"order_id\":" + orderId + ",\"order_status\":" + quote(status) + "}");
+        } catch (SQLException e) { sqlError(ex, e); }
+    }
+
+    private static void reviews(HttpExchange ex) throws IOException {
+        if (options(ex)) return;
+        if (ex.getRequestMethod().equalsIgnoreCase("GET")) {
+            String prodParam = query(ex, "product_id");
+            int prodId = integer(prodParam, -1);
+            String sql = "SELECT r.Review_ID, r.Customer_ID, NVL(c.First_Name, 'Customer') First_Name, NVL(c.Last_Name, '') Last_Name, " +
+                    "r.Product_ID, r.Rating, r.Comment_Text, r.Review_Date " +
+                    "FROM Review r LEFT JOIN Customer c ON r.Customer_ID=c.Customer_ID " +
+                    (prodId > 0 ? "WHERE r.Product_ID=? " : "") +
+                    "ORDER BY r.Review_Date DESC";
+            try (Connection c = connection(); PreparedStatement s = c.prepareStatement(sql)) {
+                if (prodId > 0) s.setInt(1, prodId);
+                ResultSet r = s.executeQuery();
+                List<String> rows = new ArrayList<>();
+                while (r.next()) {
+                    rows.add("{\"review_id\":" + r.getInt(1) + 
+                             ",\"customer_id\":" + quote(r.getString(2)) + 
+                             ",\"customer_name\":" + quote((r.getString(3) + " " + r.getString(4)).trim()) + 
+                             ",\"product_id\":" + r.getInt(5) + 
+                             ",\"rating\":" + r.getInt(6) + 
+                             ",\"comment_text\":" + quote(r.getString(7)) + 
+                             ",\"review_date\":" + quote(r.getTimestamp(8)) + "}");
+                }
+                send(ex, 200, "{\"success\":true,\"data\":[" + join(rows) + "]}");
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else if (ex.getRequestMethod().equalsIgnoreCase("POST")) {
+            Map<String, String> body = body(ex);
+            String cust = body.get("customer_id") != null && !body.get("customer_id").trim().isEmpty() ? body.get("customer_id").trim() : customer(ex);
+            int prodId = integer(body.get("product_id"), -1);
+            int rating = integer(body.get("rating"), -1);
+            String comment = body.get("comment_text");
+            if (comment == null) comment = body.get("comment");
+            if (prodId < 0) { error(ex, 400, "product_id is required"); return; }
+            if (rating < 1 || rating > 5) { error(ex, 400, "rating must be between 1 and 5"); return; }
+
+            try (Connection c = connection(); 
+                 PreparedStatement s = c.prepareStatement("INSERT INTO Review (Customer_ID, Product_ID, Rating, Comment_Text) VALUES (?, ?, ?, ?)", new String[] { "REVIEW_ID" })) {
+                s.setString(1, cust);
+                s.setInt(2, prodId);
+                s.setInt(3, rating);
+                s.setString(4, comment != null ? comment : "");
+                s.executeUpdate();
+                int reviewId = 0;
+                try (ResultSet k = s.getGeneratedKeys()) {
+                    if (k.next()) reviewId = k.getInt(1);
+                }
+                send(ex, 201, "{\"success\":true,\"message\":\"Review submitted successfully\",\"review_id\":" + reviewId + ",\"rating\":" + rating + "}");
+            } catch (SQLException e) { sqlError(ex, e); }
+        } else {
+            send(ex, 405, "{\"success\":false,\"error\":\"Method not allowed\"}");
+        }
+    }
+
+    private static String productJson(ResultSet r) throws SQLException {
+        return "{\"product_id\":" + r.getInt(1) + ",\"product_name\":" + quote(r.getString(2)) + ",\"brand\":" + quote(r.getString(3)) + ",\"price\":" + r.getDouble(4) + ",\"available_quantity\":" + r.getInt(5) + "}";
+    }
+    
+    private static String cartJson(ResultSet r) throws SQLException {
+        return "{\"cart_item_id\":" + r.getInt(1) + ",\"product_id\":" + r.getInt(2) + ",\"quantity\":" + r.getInt(3) + ",\"product_name\":" + quote(r.getString(4)) + ",\"brand\":" + quote(r.getString(5)) + ",\"price\":" + r.getDouble(6) + ",\"available_quantity\":" + r.getInt(7) + "}";
+    }
+
+    private static String quote(Object value) {
+        if (value == null) return "null";
+        String s = value instanceof Timestamp ? new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").format((Timestamp) value) : String.valueOf(value);
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") + "\"";
+    }
+
+    private static String join(List<String> v) {
+        return String.join(",", v);
+    }
+
+    private static String env(String key, String fallback) {
+        String v = System.getenv(key);
+        if (v == null || v.trim().isEmpty()) v = DOTENV.getProperty(key);
+        return v == null || v.trim().isEmpty() ? fallback : v.trim();
+    }
+
+    private static Properties loadDotEnv() {
+        Properties p = new Properties();
+        java.io.File f = new java.io.File(".env");
+        if (!f.isFile()) return p;
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                int i = line.indexOf('=');
+                if (i > 0) p.setProperty(line.substring(0, i).trim(), line.substring(i + 1).trim());
+            }
+        } catch (IOException ignored) {}
+        return p;
+    }
+
+    private static String customer(HttpExchange e) {
+        String c = query(e, "customer_id");
+        return c.isEmpty() ? CUSTOMER : c;
+    }
+
+    private static String query(HttpExchange e, String key) {
+        String q = e.getRequestURI().getRawQuery();
+        if (q == null) return "";
+        for (String p : q.split("&")) {
+            String[] kv = p.split("=", 2);
+            if (kv.length == 2 && kv[0].equals(key)) {
+                try { return URLDecoder.decode(kv[1], "UTF-8"); } catch (Exception ignored) {}
+            }
+        }
+        return "";
+    }
+
+    private static int pathId(String path, String prefix) {
+        if (!path.startsWith(prefix)) return -1;
+        try { return Integer.parseInt(path.substring(prefix.length())); } catch (Exception e) { return -1; }
+    }
+
+    private static Map<String, String> body(HttpExchange e) throws IOException {
+        String s = read(e.getRequestBody());
+        Map<String, String> m = new HashMap<>();
+        Matcher x = Pattern.compile("\"([a-zA-Z0-9_]+)\"\\s*:\\s*(?:\"([^\"]*)\"|(-?\\d+(?:\\.\\d+)?))").matcher(s);
+        while (x.find()) {
+            m.put(x.group(1), x.group(2) != null ? x.group(2) : x.group(3));
+        }
+        return m;
+    }
+
+    private static String read(InputStream in) throws IOException {
+        byte[] b = new byte[8192];
+        StringBuilder s = new StringBuilder();
+        int n;
+        while ((n = in.read(b)) > 0) s.append(new String(b, 0, n, StandardCharsets.UTF_8));
+        return s.toString();
+    }
+
+    private static int integer(String v, int fallback) {
+        try { return Integer.parseInt(v); } catch (Exception e) { return fallback; }
+    }
+
+    private static boolean options(HttpExchange e) throws IOException {
+        if (e.getRequestMethod().equalsIgnoreCase("OPTIONS")) {
+            send(e, 204, "");
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean method(HttpExchange e, String expected) throws IOException {
+        if (!e.getRequestMethod().equalsIgnoreCase(expected)) {
+            send(e, 405, "{\"success\":false,\"error\":\"Method not allowed\"}");
+            return false;
+        }
+        return true;
+    }
+
+    private static void notFound(HttpExchange e) throws IOException {
+        error(e, 404, "Not found");
+    }
+
+    private static void error(HttpExchange e, int status, String message) throws IOException {
+        send(e, status, "{\"success\":false,\"error\":" + quote(message) + "}");
+    }
+
+    private static void sqlError(HttpExchange e, Exception error) throws IOException {
+        error.printStackTrace();
+        error(e, 503, "Database service unavailable");
+    }
+
+    private static void send(HttpExchange e, int status, String body) throws IOException {
+        Headers h = e.getResponseHeaders();
+        h.set("Content-Type", "application/json; charset=utf-8");
+        h.set("Access-Control-Allow-Origin", "*");
+        h.set("Access-Control-Allow-Headers", "Content-Type");
+        h.set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+        if (e.getRequestMethod().equalsIgnoreCase("OPTIONS")) {
+            e.sendResponseHeaders(204, -1);
+            return;
+        }
+        byte[] b = body.getBytes(StandardCharsets.UTF_8);
+        e.sendResponseHeaders(status, b.length);
+        try (OutputStream o = e.getResponseBody()) {
+            o.write(b);
+        }
+    }
 }

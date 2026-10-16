@@ -1,6 +1,15 @@
 import React, { useState } from "react";
 import { Product, PRODUCTS } from "../data/products";
 import { CartItem } from "./CartDrawer";
+import { ProductReviews } from "./ProductReviews";
+
+const PRODUCT_DB_ID_MAP: Record<string, number> = {
+  keyboard: 1,
+  mouse: 2,
+  lamp: 3,
+  dac: 4,
+  macropad: 34,
+};
 
 interface ProductDetailPageProps {
   product: Product;
@@ -9,6 +18,8 @@ interface ProductDetailPageProps {
   cart?: CartItem[];
   onAddToCart?: (product: Product, quantity: number, selectedFinish: string, selectedOption: string) => void;
   onOpenCart?: () => void;
+  onOpenOrders?: () => void;
+  onOpenSearch?: () => void;
   totalItemCount?: number;
 }
 
@@ -34,6 +45,8 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   onSelectProduct,
   onAddToCart,
   onOpenCart,
+  onOpenOrders,
+  onOpenSearch,
   totalItemCount = 0,
 }) => {
   const galleryImages = (product.images && product.images.length > 0) ? product.images : [product.image];
@@ -212,6 +225,12 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
           <span className="pdp-nav-link on" data-cursor>
             <span className="pdp-nav-tx"><span>{product.category.split(" ")[0]}</span><span className="alt">{product.jpName || "製品"}</span></span>
           </span>
+          <button onClick={onOpenSearch} className="pdp-nav-link" data-cursor aria-label="Search Products">
+            <span className="pdp-nav-tx"><span>Search</span><span className="alt">検索</span></span>
+          </button>
+          <button onClick={onOpenOrders} className="pdp-nav-link" data-cursor aria-label="Customer Orders">
+            <span className="pdp-nav-tx"><span>Orders</span><span className="alt">注文</span></span>
+          </button>
           <button onClick={onOpenCart} className="pdp-nav-link pdp-nav-cart" data-cursor aria-label="Shopping Cart">
             <span className="pdp-nav-tx"><span>Cart</span><span className="alt">袋</span></span>
             {totalItemCount > 0 && (
@@ -525,6 +544,15 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
             </div>
           </div>
         </section>
+
+        {/* ── Customer Reviews & Ratings (Review Entity) ── */}
+        <div style={{ padding: "0 clamp(20px,3.4vw,56px)" }}>
+          <ProductReviews
+            key={product.id}
+            productId={PRODUCT_DB_ID_MAP[product.id] || 1}
+            productName={product.name}
+          />
+        </div>
 
         {/* ── companion products ── */}
         <section style={{

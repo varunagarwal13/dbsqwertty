@@ -3,6 +3,10 @@ import { KageStoreLandingPage } from "./shaders/landing-pages/LandingPages";
 import { ProductDetailPage } from "./components/ProductDetailPage";
 import { PRODUCTS, Product } from "./data/products";
 import { CartDrawer, CartItem } from "./components/CartDrawer";
+import { CheckoutModal } from "./components/CheckoutModal";
+import { OrdersModal } from "./components/OrdersModal";
+import { SearchModal } from "./components/SearchModal";
+import { api, getApiBase } from "./services/api";
 import "./shaders/threeui.css";
 
 const PRODUCT_DB_ID_MAP: Record<string, number> = {
@@ -31,9 +35,17 @@ export default function App() {
     return null;
   });
 
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(() => api.getStoredCart());
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+  const [isOrdersOpen, setIsOrdersOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Sync cart to localStorage whenever it changes
+  useEffect(() => {
+    api.saveStoredCart(cart);
+  }, [cart]);
 
   const totalItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -52,7 +64,7 @@ export default function App() {
 
   // Sync initial cart from Oracle SQL Database Backend
   useEffect(() => {
-    fetch("http://localhost:5000/cart")
+    fetch(`${getApiBase()}/cart?customer_id=25BYB0186`)
       .then((res) => (res.ok ? res.json() : null))
       .then((res) => {
         if (res && res.success && Array.isArray(res.data)) {
@@ -107,6 +119,9 @@ export default function App() {
       if (event.data && event.data.type === "OPEN_CART") {
         setIsCartOpen(true);
       }
+      if (event.data && event.data.type === "OPEN_SEARCH") {
+        setIsSearchOpen(true);
+      }
     };
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
@@ -146,7 +161,7 @@ export default function App() {
 
     // 2. Persist to Oracle SQL Database
     const dbProductId = PRODUCT_DB_ID_MAP[product.id] || 1;
-    fetch("http://localhost:5000/cart/add", {
+    fetch(`${getApiBase()}/cart/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -176,7 +191,7 @@ export default function App() {
     setCart(prev => {
       const itemToRemove = prev[idx];
       if (itemToRemove && itemToRemove.cartItemId) {
-        fetch(`http://localhost:5000/cart/remove/${itemToRemove.cartItemId}`, {
+        fetch(`${getApiBase()}/cart/remove/${itemToRemove.cartItemId}`, {
           method: "DELETE",
         }).catch(err => console.warn("[Oracle SQL DB] Failed to remove item:", err));
       }
@@ -189,7 +204,7 @@ export default function App() {
     setCart(prev => {
       const item = prev[idx];
       if (item && item.cartItemId) {
-        fetch(`http://localhost:5000/cart/update/${item.cartItemId}`, {
+        fetch(`${getApiBase()}/cart/update/${item.cartItemId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ quantity: newQty }),
@@ -211,6 +226,8 @@ export default function App() {
           cart={cart}
           onAddToCart={handleAddToCart}
           onOpenCart={() => setIsCartOpen(true)}
+          onOpenOrders={() => setIsOrdersOpen(true)}
+          onOpenSearch={() => setIsSearchOpen(true)}
           totalItemCount={totalItemCount}
         />
       ) : (
@@ -225,6 +242,25 @@ export default function App() {
             bodySize={17}
             headingLetterSpacing={-0.012}
           />
+          {/* Quick Floating Link to Track Orders & Lifecycle */}
+          <button
+            onClick={() => setIsOrdersOpen(true)}
+            style={{
+              position: "fixed", bottom: 24, left: 24, zIndex: 90,
+              padding: "10px 18px",
+              background: "rgba(10,14,18,0.85)", backdropFilter: "blur(8px)",
+              border: "1px solid rgba(223,231,224,0.18)", borderRadius: 100,
+              fontSize: 11, fontWeight: 500, letterSpacing: ".18em", textTransform: "uppercase",
+              color: "#dfe7e0", cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 8,
+              boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
+              transition: "all .3s ease",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "#e0231c"; e.currentTarget.style.transform = "translateY(-2px)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(223,231,224,0.18)"; e.currentTarget.style.transform = "translateY(0)"; }}
+          >
+            <span style={{ color: "#e0231c" }}>●</span> View Orders &amp; Lifecycle
+          </button>
         </div>
       )}
 
@@ -236,6 +272,39 @@ export default function App() {
         onRemoveItem={handleRemoveFromCart}
         onUpdateQuantity={handleUpdateQuantity}
         onSelectProduct={(id) => { setIsCartOpen(false); handleSelectProduct(id); }}
+        onCheckout={() => {
+          setIsCartOpen(false);
+          setIsCheckoutOpen(true);
+        }}
+      />
+
+      {/* Checkout and Payment Modal */}
+      <CheckoutModal
+        isOpen={isCheckoutOpen}
+        onClose={() => setIsCheckoutOpen(false)}
+        cart={cart}
+        onOrderCompleted={(order) => {
+          setCart([]);
+          setToastMessage(`Order #ORD-${order.order_id} recorded in Oracle DB!`);
+          setTimeout(() => setToastMessage(null), 3500);
+        }}
+        onViewOrders={() => {
+          setIsCheckoutOpen(false);
+          setIsOrdersOpen(true);
+        }}
+      />
+
+      {/* Sales Orders and Lifecycle Modal */}
+      <OrdersModal
+        isOpen={isOrdersOpen}
+        onClose={() => setIsOrdersOpen(false)}
+      />
+
+      {/* Global Product Search Modal */}
+      <SearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onSelectProduct={handleSelectProduct}
       />
 
       {/* Global toast */}

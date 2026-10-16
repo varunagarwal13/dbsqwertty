@@ -971,6 +971,7 @@ body[data-layout-footer="b"] .foot-base span:last-child{ text-align:right; }
     <a class="nav-link" href="#pathways" data-cursor><span>Collection</span><span class="alt">製品</span></a>
     <a class="nav-link" href="#lessons" data-cursor><span>Catalogue</span><span class="alt">仕様</span></a>
     <a class="nav-link" href="#eternity" data-cursor><span>Coming Soon</span><span class="alt">予告</span></a>
+    <button class="nav-link" id="nav-search-btn" aria-label="Search Products" data-cursor style="background:none; border:none; color:inherit; font:inherit; cursor:pointer;"><span>Search</span><span class="alt">検索</span></button>
     <button class="nav-cart" id="nav-cart-btn" aria-label="Shopping Cart" data-cursor>
       <span class="nav-cart-tx"><span>Cart</span><span class="alt">袋</span></span>
       <span class="nav-cart-badge empty" id="nav-cart-badge">0</span>
@@ -4925,6 +4926,18 @@ else addEventListener('DOMContentLoaded', boot);
         e.stopPropagation();
         if (window.parent) {
           window.parent.postMessage({ type: 'OPEN_CART' }, '*');
+        }
+      });
+    }
+
+    // Nav Search Button
+    const searchBtn = document.getElementById('nav-search-btn');
+    if (searchBtn) {
+      searchBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.parent) {
+          window.parent.postMessage({ type: 'OPEN_SEARCH' }, '*');
         }
       });
     }

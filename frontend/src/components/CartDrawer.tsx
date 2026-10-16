@@ -32,10 +32,11 @@ interface CartDrawerProps {
   onRemoveItem: (idx: number) => void;
   onUpdateQuantity: (idx: number, newQty: number) => void;
   onSelectProduct: (productId: string) => void;
+  onCheckout?: () => void;
 }
 
 export const CartDrawer: React.FC<CartDrawerProps> = ({
-  isOpen, onClose, cart, onRemoveItem, onUpdateQuantity, onSelectProduct,
+  isOpen, onClose, cart, onRemoveItem, onUpdateQuantity, onSelectProduct, onCheckout,
 }) => {
   const [isClosing, setIsClosing] = useState(false);
   const cartTotal = cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
@@ -251,7 +252,11 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
           {/* checkout CTA */}
           <button
             disabled={cart.length === 0}
-            onClick={() => alert(`Proceeding to checkout · ${totalItemCount} items · $${cartTotal.toFixed(2)}`)}
+            onClick={() => {
+              if (onCheckout) {
+                onCheckout();
+              }
+            }}
             style={{
               width: "100%", position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 14,
               padding: "17px 30px", border: `1px solid ${cart.length > 0 ? T.line : T.lineSoft}`, borderRadius: 100, overflow: "hidden",
