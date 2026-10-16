@@ -33,10 +33,13 @@ interface CartDrawerProps {
   onUpdateQuantity: (idx: number, newQty: number) => void;
   onSelectProduct: (productId: string) => void;
   onCheckout?: () => void;
+  stockMap?: Record<string, number>;
+  onWarningMessage?: (msg: string) => void;
 }
 
 export const CartDrawer: React.FC<CartDrawerProps> = ({
   isOpen, onClose, cart, onRemoveItem, onUpdateQuantity, onSelectProduct, onCheckout,
+  stockMap = {}, onWarningMessage,
 }) => {
   const [isClosing, setIsClosing] = useState(false);
   const cartTotal = cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
@@ -206,14 +209,32 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                         fontVariantNumeric: "tabular-nums", color: T.bone,
                       }}>{item.quantity}</span>
                       <button
-                        onClick={() => onUpdateQuantity(idx, item.quantity + 1)}
-                        style={{ padding: "4px 10px", fontSize: 14, color: T.bone, cursor: "pointer" }}
+                        onClick={() => {
+                          const stock = stockMap?.[item.product.id] ?? 999;
+                          if (item.quantity + 1 > stock) {
+                            onWarningMessage?.(`It's not there! Requested quantity exceeds inventory. Only ${stock} units of "${item.product.name}" are available in inventory.`);
+                            return;
+                          }
+                          onUpdateQuantity(idx, item.quantity + 1);
+                        }}
+                        style={{
+                          padding: "4px 10px", fontSize: 14,
+                          color: (stockMap?.[item.product.id] ?? 999) <= item.quantity ? T.muted : T.bone,
+                          cursor: (stockMap?.[item.product.id] ?? 999) <= item.quantity ? "not-allowed" : "pointer",
+                        }}
                       >+</button>
                     </div>
 
-                    <span style={{ fontSize: 14, fontWeight: 400, fontVariantNumeric: "tabular-nums", color: T.bone }}>
-                      ${(item.product.price * item.quantity).toFixed(2)}
-                    </span>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                      <span style={{ fontSize: 14, fontWeight: 400, fontVariantNumeric: "tabular-nums", color: T.bone }}>
+                        ${(item.product.price * item.quantity).toFixed(2)}
+                      </span>
+                      {(stockMap?.[item.product.id] ?? 999) <= item.quantity && (
+                        <span style={{ fontSize: 9, color: "#f59e0b", letterSpacing: ".06em", textTransform: "uppercase" }}>
+                          Max stock reached
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* remove */}

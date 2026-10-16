@@ -22,6 +22,8 @@ interface ProductDetailPageProps {
   onOpenSearch?: () => void;
   onOpenCustomer?: () => void;
   totalItemCount?: number;
+  availableStock?: number;
+  onWarningMessage?: (msg: string) => void;
 }
 
 /* ── design tokens (mirrors kage.html :root) ── */
@@ -50,7 +52,13 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   onOpenSearch,
   onOpenCustomer,
   totalItemCount = 0,
+  availableStock = 99,
+  onWarningMessage,
 }) => {
+  const stock = typeof availableStock === "number" ? availableStock : 99;
+  const isOutOfStock = stock <= 0;
+  const isLowStock = stock > 0 && stock <= 15;
+
   const galleryImages = (product.images && product.images.length > 0) ? product.images : [product.image];
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [isHoveringImage, setIsHoveringImage] = useState(false);
@@ -77,6 +85,23 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
   };
 
   const handleAddClick = () => {
+    if (isOutOfStock) {
+      onWarningMessage?.(`It's not there! "${product.name}" is completely out of stock in inventory.`);
+      return;
+    }
+    const currentInCart = (cart || [])
+      .filter(i => i.product.id === product.id)
+      .reduce((sum, i) => sum + i.quantity, 0);
+
+    if (currentInCart + quantity > stock) {
+      const remaining = Math.max(0, stock - currentInCart);
+      const msg = remaining === 0
+        ? `It's not there! You already have all ${stock} available units of "${product.name}" in your cart.`
+        : `It's not there! Cannot add ${quantity} units. Only ${stock} units are in inventory (${currentInCart} already in cart, can only add ${remaining} more).`;
+      onWarningMessage?.(msg);
+      return;
+    }
+
     if (onAddToCart) {
       onAddToCart(product, quantity, selectedFinish, selectedOption);
     }
@@ -424,8 +449,21 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
               <span style={{ fontSize: "clamp(26px,2.5vw,36px)", fontWeight: 300, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums" }}>
                 {product.priceDisplay}
               </span>
-              <span style={{ fontSize: 14, lineHeight: 1.68, color: "#9aa5a0", fontWeight: 300 }}>
-                {product.isComingSoon ? "Reserve opens soon" : "In stock · Ships in 24h"}
+              <span style={{
+                fontSize: 13, lineHeight: 1.68,
+                color: isOutOfStock ? "#ef4444" : isLowStock ? "#f59e0b" : "#4ade80",
+                fontWeight: 400, display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: "50%",
+                  backgroundColor: isOutOfStock ? "#ef4444" : isLowStock ? "#f59e0b" : "#4ade80",
+                  boxShadow: `0 0 10px ${isOutOfStock ? "#ef4444" : isLowStock ? "#f59e0b" : "#4ade80"}`,
+                }} />
+                {isOutOfStock
+                  ? "It's not there! Out of Stock (0 units in inventory)"
+                  : isLowStock
+                  ? `Low Inventory: Only ${stock} units remaining`
+                  : `In Stock: ${stock} units available in inventory`}
               </span>
             </div>
 
@@ -493,26 +531,65 @@ export const ProductDetailPage: React.FC<ProductDetailPageProps> = ({
               <div style={{
                 display: "flex", alignItems: "center", border: `1px solid ${T.lineSoft}`,
               }}>
-                <button onClick={() => setQuantity(Math.max(1, quantity - 1))} style={{
-                  padding: "14px 16px", fontSize: 16, color: T.bone, cursor: "pointer",
-                }}>−</button>
-                <span style={{ minWidth: 32, textAlign: "center", fontSize: 14, fontWeight: 400, fontVariantNumeric: "tabular-nums" }}>{quantity}</span>
-                <button onClick={() => setQuantity(quantity + 1)} style={{
-                  padding: "14px 16px", fontSize: 16, color: T.bone, cursor: "pointer",
-                }}>+</button>
+                <button
+                  onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                  disabled={quantity <= 1 || isOutOfStock}
+                  style={{
+                    padding: "14px 16px", fontSize: 16,
+                    color: quantity <= 1 || isOutOfStock ? T.muted : T.bone,
+                    cursor: quantity <= 1 || isOutOfStock ? "not-allowed" : "pointer",
+                    background: "none", border: "none",
+                  }}
+                >−</button>
+                <span style={{ minWidth: 32, textAlign: "center", fontSize: 14, fontWeight: 400, fontVariantNumeric: "tabular-nums" }}>
+                  {isOutOfStock ? 0 : quantity}
+                </span>
+                <button
+                  onClick={() => {
+                    if (quantity >= stock) {
+                      onWarningMessage?.(`It's not there! Requested quantity exceeds inventory. Only ${stock} units are available in inventory.`);
+                      return;
+                    }
+                    setQuantity(quantity + 1);
+                  }}
+                  disabled={quantity >= stock || isOutOfStock}
+                  style={{
+                    padding: "14px 16px", fontSize: 16,
+                    color: quantity >= stock || isOutOfStock ? T.muted : T.bone,
+                    cursor: quantity >= stock || isOutOfStock ? "not-allowed" : "pointer",
+                    background: "none", border: "none",
+                  }}
+                >+</button>
               </div>
 
-              <button onClick={handleAddClick} style={{
-                flex: 1, position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 14,
-                padding: "17px 30px", border: `1px solid ${T.line}`, borderRadius: 100, overflow: "hidden",
-                fontSize: 11, fontWeight: 500, letterSpacing: ".22em", textTransform: "uppercase" as const,
-                color: T.bone, cursor: "pointer",
-                transition: `color .45s ${T.ease}, border-color .45s, background .35s`,
-              }}
-                onMouseEnter={e => { e.currentTarget.style.background = T.bone; e.currentTarget.style.color = T.ink; e.currentTarget.style.borderColor = T.bone; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = T.bone; e.currentTarget.style.borderColor = T.line; }}
+              <button
+                onClick={handleAddClick}
+                disabled={isOutOfStock}
+                style={{
+                  flex: 1, position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 14,
+                  padding: "17px 30px",
+                  border: `1px solid ${isOutOfStock ? "rgba(239,68,68,0.3)" : T.line}`,
+                  borderRadius: 100, overflow: "hidden",
+                  fontSize: 11, fontWeight: 500, letterSpacing: ".22em", textTransform: "uppercase" as const,
+                  color: isOutOfStock ? "#ef4444" : T.bone,
+                  cursor: isOutOfStock ? "not-allowed" : "pointer",
+                  background: isOutOfStock ? "rgba(239,68,68,0.06)" : "transparent",
+                  transition: `color .45s ${T.ease}, border-color .45s, background .35s`,
+                }}
+                onMouseEnter={e => {
+                  if (isOutOfStock) return;
+                  e.currentTarget.style.background = T.bone;
+                  e.currentTarget.style.color = T.ink;
+                  e.currentTarget.style.borderColor = T.bone;
+                }}
+                onMouseLeave={e => {
+                  if (isOutOfStock) return;
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = T.bone;
+                  e.currentTarget.style.borderColor = T.line;
+                }}
               >
-                {product.isComingSoon ? "Join Priority Reserve" : "Add to Selection"}
+                {isOutOfStock ? "It's Not There · Out of Stock" : product.isComingSoon ? "Join Priority Reserve" : "Add to Selection"}
                 <svg viewBox="0 0 14 14" fill="none" width={13} height={13}><path d="M3 11 11 3M5 3h6v6" stroke="currentColor" strokeWidth="1.3"/></svg>
               </button>
             </div>

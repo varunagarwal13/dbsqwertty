@@ -105,17 +105,32 @@ public final class JavaOracleServer {
                  PreparedStatement cart = c.prepareStatement("SELECT Cart_ID FROM Cart WHERE Customer_ID=?");
                  PreparedStatement item = c.prepareStatement("SELECT Cart_Item_ID, Quantity FROM Cart_Item WHERE Cart_ID=? AND Product_ID=? FOR UPDATE")) {
                 stock.setInt(1, product); ResultSet sr = stock.executeQuery();
-                if (!sr.next()) { c.rollback(); error(ex, 404, "Product not found or out of stock"); return; }
+                if (!sr.next()) { c.rollback(); send(ex, 400, "{\"success\":false,\"message\":\"It's not there in stock! Product is not in inventory.\",\"available\":0}"); return; }
                 int available = sr.getInt(1); cart.setString(1, cust); ResultSet cr = cart.executeQuery();
                 if (!cr.next()) { c.rollback(); error(ex, 404, "Cart not found for this customer"); return; }
                 int cartId = cr.getInt(1); item.setInt(1, cartId); item.setInt(2, product); ResultSet ir = item.executeQuery();
                 int itemId; int savedQty;
                 if (ir.next()) {
                     itemId = ir.getInt(1); savedQty = ir.getInt(2) + qty;
-                    if (savedQty > available) { c.rollback(); error(ex, 400, "Not enough stock. Only " + Math.max(0, available - ir.getInt(2)) + " more available."); return; }
+                    if (savedQty > available) {
+                        c.rollback();
+                        int remaining = Math.max(0, available - ir.getInt(2));
+                        String msg = remaining == 0
+                            ? "It's not there in stock! You already have all " + available + " available units in your cart."
+                            : "It's not there! Requested quantity exceeds inventory. Only " + available + " units are in inventory (" + ir.getInt(2) + " already in cart, can only add " + remaining + " more).";
+                        send(ex, 400, "{\"success\":false,\"message\":" + quote(msg) + ",\"available\":" + available + "}");
+                        return;
+                    }
                     try (PreparedStatement u = c.prepareStatement("UPDATE Cart_Item SET Quantity=? WHERE Cart_Item_ID=?")) { u.setInt(1, savedQty); u.setInt(2, itemId); u.executeUpdate(); }
                 } else {
-                    if (qty > available) { c.rollback(); error(ex, 400, "Not enough stock. Only " + available + " available."); return; }
+                    if (qty > available) {
+                        c.rollback();
+                        String msg = available <= 0 
+                            ? "It's not there in stock! 0 units are available in inventory."
+                            : "It's not there! Requested quantity (" + qty + ") exceeds inventory. Only " + available + " units available in inventory.";
+                        send(ex, 400, "{\"success\":false,\"message\":" + quote(msg) + ",\"available\":" + available + "}");
+                        return;
+                    }
                     try (PreparedStatement i = c.prepareStatement("INSERT INTO Cart_Item (Cart_ID, Product_ID, Quantity) VALUES (?, ?, ?)", new String[] { "CART_ITEM_ID" })) { 
                         i.setInt(1, cartId); 
                         i.setInt(2, product); 
@@ -140,7 +155,15 @@ public final class JavaOracleServer {
         try (Connection c = connection()) {
             c.setAutoCommit(false);
             try (PreparedStatement s = c.prepareStatement("SELECT NVL(i.Available_Quantity,0) FROM Cart_Item ci LEFT JOIN Inventory i ON ci.Product_ID=i.Product_ID WHERE ci.Cart_Item_ID=? FOR UPDATE")) {
-                s.setInt(1, id); ResultSet r = s.executeQuery(); if (!r.next()) { c.rollback(); error(ex,404,"Cart item not found"); return; } if (qty > r.getInt(1)) { c.rollback(); error(ex,400,"Not enough stock. Only " + r.getInt(1) + " available."); return; }
+                s.setInt(1, id); ResultSet r = s.executeQuery(); 
+                if (!r.next()) { c.rollback(); error(ex,404,"Cart item not found"); return; } 
+                int available = r.getInt(1);
+                if (qty > available) { 
+                    c.rollback(); 
+                    String msg = "It's not there! Requested quantity (" + qty + ") exceeds inventory. Only " + available + " units are available in inventory.";
+                    send(ex, 400, "{\"success\":false,\"message\":" + quote(msg) + ",\"available\":" + available + "}"); 
+                    return; 
+                }
                 try (PreparedStatement u = c.prepareStatement("UPDATE Cart_Item SET Quantity=? WHERE Cart_Item_ID=?")) { 
                     u.setInt(1,qty); u.setInt(2,id); u.executeUpdate(); c.commit(); send(ex,200,"{\"success\":true,\"message\":\"Cart item updated\"}"); 
                 }
@@ -170,7 +193,7 @@ public final class JavaOracleServer {
         try (Connection c = connection()) {
             c.setAutoCommit(false);
             try (PreparedStatement cart = c.prepareStatement("SELECT Cart_ID FROM Cart WHERE Customer_ID=?"); 
-                 PreparedStatement items = c.prepareStatement("SELECT ci.Product_ID, ci.Quantity, p.Price, NVL(i.Available_Quantity,0) FROM Cart_Item ci JOIN Product p ON ci.Product_ID=p.Product_ID LEFT JOIN Inventory i ON ci.Product_ID=i.Product_ID WHERE ci.Cart_ID=? FOR UPDATE")) {
+                 PreparedStatement items = c.prepareStatement("SELECT ci.Product_ID, ci.Quantity, p.Price, NVL(i.Available_Quantity,0), p.Product_Name FROM Cart_Item ci JOIN Product p ON ci.Product_ID=p.Product_ID LEFT JOIN Inventory i ON ci.Product_ID=i.Product_ID WHERE ci.Cart_ID=? FOR UPDATE")) {
                 cart.setString(1, customer(ex)); 
                 ResultSet cr = cart.executeQuery(); 
                 if (!cr.next()) { error(ex, 404, "Cart not found"); return; } 
@@ -182,7 +205,13 @@ public final class JavaOracleServer {
                 double total = 0; 
                 while (r.next()) {
                     int p = r.getInt(1), q = r.getInt(2), stock = r.getInt(4);
-                    if (q > stock) { c.rollback(); error(ex, 400, "Not enough stock for product ID " + p); return; }
+                    String pName = r.getString(5);
+                    if (q > stock) { 
+                        c.rollback(); 
+                        String msg = "It's not there in stock! Product '" + pName + "' has only " + stock + " units available in inventory (requested " + q + ").";
+                        send(ex, 400, "{\"success\":false,\"message\":" + quote(msg) + ",\"available\":" + stock + "}"); 
+                        return; 
+                    }
                     ids.add(new int[]{p, q});
                     prices.add(r.getDouble(3));
                     total += r.getDouble(3) * q;

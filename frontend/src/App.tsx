@@ -44,6 +44,36 @@ export default function App() {
   const [isCustomerOpen, setIsCustomerOpen] = useState(false);
   const [activeCustomerId, setActiveCustomerId] = useState(() => api.getActiveCustomerId());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [stockMap, setStockMap] = useState<Record<string, number>>({
+    keyboard: 38,
+    mouse: 11,
+    lamp: 18,
+    dac: 30,
+    macropad: 200,
+  });
+
+  // Fetch live inventory from backend
+  const refreshStock = useCallback(() => {
+    fetch(`${getApiBase()}/products`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (json && json.success && Array.isArray(json.data)) {
+          const map: Record<string, number> = {};
+          for (const item of json.data) {
+            const key = DB_ID_TO_PRODUCT_ID[item.product_id];
+            if (key) {
+              map[key] = item.available_quantity;
+            }
+          }
+          setStockMap((prev) => ({ ...prev, ...map }));
+        }
+      })
+      .catch((err) => console.warn("[API] fetchProducts stock sync:", err));
+  }, []);
+
+  useEffect(() => {
+    refreshStock();
+  }, [refreshStock]);
 
   // Sync cart to localStorage whenever it changes
   useEffect(() => {
@@ -147,6 +177,29 @@ export default function App() {
   }, []);
 
   const handleAddToCart = useCallback((product: Product, quantity: number, selectedFinish: string, selectedOption: string) => {
+    const dbProductId = PRODUCT_DB_ID_MAP[product.id] || 1;
+    const available = stockMap[product.id] ?? 99;
+
+    if (available <= 0) {
+      setToastMessage(`It's not there! "${product.name}" is completely out of stock in inventory.`);
+      setTimeout(() => setToastMessage(null), 4000);
+      return;
+    }
+
+    const currentInCart = cart
+      .filter(item => item.product.id === product.id)
+      .reduce((sum, item) => sum + item.quantity, 0);
+
+    if (currentInCart + quantity > available) {
+      const remaining = Math.max(0, available - currentInCart);
+      const msg = remaining === 0
+        ? `It's not there! You already have all ${available} available units of "${product.name}" in your cart.`
+        : `It's not there! Cannot add ${quantity} units. Only ${available} units are in inventory (${currentInCart} already in cart, can only add ${remaining} more).`;
+      setToastMessage(msg);
+      setTimeout(() => setToastMessage(null), 4500);
+      return;
+    }
+
     // 1. Optimistic React state update
     setCart(prev => {
       const existing = prev.find(
@@ -167,7 +220,6 @@ export default function App() {
     setIsCartOpen(true);
 
     // 2. Persist to Oracle SQL Database
-    const dbProductId = PRODUCT_DB_ID_MAP[product.id] || 1;
     fetch(`${getApiBase()}/cart/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -179,7 +231,26 @@ export default function App() {
     })
       .then(res => res.json())
       .then(data => {
-        if (data && data.success && data.cart_item_id) {
+        if (!data.success) {
+          // Revert optimistic add
+          setCart(prev => {
+            const existing = prev.find(
+              item => item.product.id === product.id &&
+                      item.selectedFinish === selectedFinish &&
+                      item.selectedOption === selectedOption
+            );
+            if (existing) {
+              if (existing.quantity <= quantity) {
+                return prev.filter(item => item !== existing);
+              } else {
+                return prev.map(item => item === existing ? { ...item, quantity: item.quantity - quantity } : item);
+              }
+            }
+            return prev;
+          });
+          setToastMessage(data.message || "It's not there in stock according to inventory.");
+          setTimeout(() => setToastMessage(null), 4500);
+        } else if (data.cart_item_id) {
           setCart(prev =>
             prev.map(item =>
               item.product.id === product.id && item.selectedFinish === selectedFinish
@@ -192,7 +263,7 @@ export default function App() {
       .catch(err => {
         console.warn("[Oracle SQL DB] Failed to persist cart item:", err);
       });
-  }, [activeCustomerId]);
+  }, [activeCustomerId, cart, stockMap]);
 
   const handleRemoveFromCart = useCallback((idx: number) => {
     setCart(prev => {
@@ -208,18 +279,37 @@ export default function App() {
 
   const handleUpdateQuantity = useCallback((idx: number, newQty: number) => {
     if (newQty < 1) return;
+    const item = cart[idx];
+    if (!item) return;
+
+    const available = stockMap[item.product.id] ?? 99;
+    if (newQty > available) {
+      setToastMessage(`It's not there! Requested quantity (${newQty}) exceeds inventory. Only ${available} units are available.`);
+      setTimeout(() => setToastMessage(null), 4000);
+      return;
+    }
+
     setCart(prev => {
-      const item = prev[idx];
-      if (item && item.cartItemId) {
-        fetch(`${getApiBase()}/cart/update/${item.cartItemId}`, {
+      const currentItem = prev[idx];
+      if (currentItem && currentItem.cartItemId) {
+        fetch(`${getApiBase()}/cart/update/${currentItem.cartItemId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ quantity: newQty }),
-        }).catch(err => console.warn("[Oracle SQL DB] Failed to update item:", err));
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (data && !data.success) {
+              setToastMessage(data.message || "It's not there in stock according to inventory.");
+              setTimeout(() => setToastMessage(null), 4000);
+              setCart(p => p.map((it, i) => i === idx ? { ...it, quantity: item.quantity } : it));
+            }
+          })
+          .catch(err => console.warn("[Oracle SQL DB] Failed to update item:", err));
       }
       return prev.map((item, i) => i === idx ? { ...item, quantity: newQty } : item);
     });
-  }, []);
+  }, [cart, stockMap]);
 
   const currentProduct = selectedProductId ? PRODUCTS[selectedProductId] : null;
 
@@ -237,6 +327,11 @@ export default function App() {
           onOpenSearch={() => setIsSearchOpen(true)}
           onOpenCustomer={() => setIsCustomerOpen(true)}
           totalItemCount={totalItemCount}
+          availableStock={stockMap[currentProduct.id]}
+          onWarningMessage={(msg) => {
+            setToastMessage(msg);
+            setTimeout(() => setToastMessage(null), 4500);
+          }}
         />
       ) : (
         <div className="shader-frame" style={{ width: "100vw", height: "100vh", margin: 0, padding: 0, position: "relative" }}>
@@ -302,6 +397,11 @@ export default function App() {
           setIsCartOpen(false);
           setIsCheckoutOpen(true);
         }}
+        stockMap={stockMap}
+        onWarningMessage={(msg) => {
+          setToastMessage(msg);
+          setTimeout(() => setToastMessage(null), 4500);
+        }}
       />
 
       {/* Checkout and Payment Modal */}
@@ -311,6 +411,7 @@ export default function App() {
         cart={cart}
         onOrderCompleted={(order) => {
           setCart([]);
+          refreshStock();
           setToastMessage(`Order #ORD-${order.order_id} recorded in Oracle DB!`);
           setTimeout(() => setToastMessage(null), 3500);
         }}
