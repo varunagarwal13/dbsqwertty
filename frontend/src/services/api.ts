@@ -350,34 +350,20 @@ export const api = {
   },
 
   async fetchOrders(): Promise<DBOrder[]> {
-    let localOrders = getStoredLocalOrders();
     try {
-      const res = await fetch(`${getApiBase()}/orders?customer_id=${CURRENT_CUSTOMER_ID}`);
+      const res = await fetch(`${getApiBase()}/orders?customer_id=${this.getActiveCustomerId()}`);
       if (res.ok) {
         const json = await res.json();
         if (json.success && Array.isArray(json.data)) {
-          // Merge backend orders with any local orders
           const backendOrders: DBOrder[] = json.data;
-          const mergedMap = new Map<number, DBOrder>();
-          // Put local first
-          for (const ord of localOrders) {
-            mergedMap.set(ord.order_id, ord);
-          }
-          // Overwrite/enrich with authoritative backend records
-          for (const ord of backendOrders) {
-            mergedMap.set(ord.order_id, ord);
-          }
-          const merged = Array.from(mergedMap.values()).sort(
-            (a, b) => new Date(b.order_date).getTime() - new Date(a.order_date).getTime()
-          );
-          saveStoredLocalOrders(merged);
-          return merged;
+          saveStoredLocalOrders(backendOrders);
+          return backendOrders;
         }
       }
     } catch (e) {
       console.warn("[API] fetchOrders using local persistence:", e);
     }
-    return localOrders;
+    return getStoredLocalOrders();
   },
 
   async updateOrderStatus(orderId: number, status: OrderLifecycleState): Promise<boolean> {
